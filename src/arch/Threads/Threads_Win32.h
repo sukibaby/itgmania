@@ -38,7 +38,7 @@ class MutexImpl_Win32 : public MutexImpl {
   void Unlock();
 
  private:
-  HANDLE mutex;
+  CRITICAL_SECTION mutex;
 };
 
 class EventImpl_Win32 : public EventImpl {
@@ -53,11 +53,7 @@ class EventImpl_Win32 : public EventImpl {
 
  private:
   MutexImpl_Win32* m_pParent;
-
-  int m_iNumWaiting;
-  CRITICAL_SECTION m_iNumWaitingLock;
-  HANDLE m_WakeupSema;
-  HANDLE m_WaitersDone;
+  CONDITION_VARIABLE m_ConditionVariable;
 };
 
 class SemaImpl_Win32 : public SemaImpl {

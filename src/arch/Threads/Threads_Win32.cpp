@@ -194,11 +194,14 @@ ThreadImpl* MakeThread(
 }
 
 MutexImpl_Win32::MutexImpl_Win32(RageMutex* pParent) : MutexImpl(pParent) {
-  mutex = CreateMutex(nullptr, false, nullptr);
-  ASSERT_M(mutex != nullptr, werr_ssprintf(GetLastError(), "CreateMutex"));
+  // A nonzero spin count avoids a kernel transition on short waits, which
+  // is free when uncontended and cheap insurance under light contention.
+  // (4000 is the spin count Windows' own heap manager uses.) Starting with
+  // Vista this call can't fail, so there's no return value to check.
+  InitializeCriticalSectionAndSpinCount(&mutex, 4000);
 }
 
-MutexImpl_Win32::~MutexImpl_Win32() { CloseHandle(mutex); }
+MutexImpl_Win32::~MutexImpl_Win32() { DeleteCriticalSection(&mutex); }
 
 /* NOTE(sukibaby):  the function name here is a bit misleading.
  * It provides additional error handling and assertions which
@@ -231,35 +234,17 @@ static bool SimpleWaitForSingleObject(HANDLE h, DWORD ms) {
 }
 
 bool MutexImpl_Win32::Lock() {
-  DWORD dwWaitResult = WaitForSingleObject(mutex, INFINITE);
-  switch (dwWaitResult) {
-    case WAIT_OBJECT_0:
-      return true;
-
-    case WAIT_TIMEOUT:
-      return false;
-
-    case WAIT_ABANDONED:
-      return false;
-
-    default:
-      FAIL_M(
-          "WaitForSingleObject failed in a way that shouldn't have been "
-          "possible");
-  }
+  // Always succeeds; unlike WaitForSingleObject there's no timeout or
+  // abandonment status to report here (see the header comment on `mutex`).
+  EnterCriticalSection(&mutex);
+  return true;
 }
 
-bool MutexImpl_Win32::TryLock() { return SimpleWaitForSingleObject(mutex, 0); }
-
-void MutexImpl_Win32::Unlock() {
-  const bool ret = !!ReleaseMutex(mutex);
-
-  /* We can't ASSERT here, since this is called from checkpoints,
-   * which is called from ASSERT. */
-  if (!ret) {
-    sm_crash(werr_ssprintf(GetLastError(), "ReleaseMutex failed"));
-  }
+bool MutexImpl_Win32::TryLock() {
+  return TryEnterCriticalSection(&mutex) != 0;
 }
+
+void MutexImpl_Win32::Unlock() { LeaveCriticalSection(&mutex); }
 
 uint64_t GetThisThreadId() { return GetCurrentThreadId(); }
 
@@ -271,98 +256,50 @@ MutexImpl* MakeMutex(RageMutex* pParent) {
 
 EventImpl_Win32::EventImpl_Win32(MutexImpl_Win32* pParent) {
   m_pParent = pParent;
-  m_iNumWaiting = 0;
-  m_WakeupSema = CreateSemaphore(nullptr, 0, 0x7fffffff, nullptr);
-  InitializeCriticalSection(&m_iNumWaitingLock);
-  m_WaitersDone = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+  InitializeConditionVariable(&m_ConditionVariable);
 }
 
 EventImpl_Win32::~EventImpl_Win32() {
-  ASSERT_M(
-      m_iNumWaiting == 0,
-      ssprintf("event destroyed while still in use (%i)", m_iNumWaiting));
-
-  // We don't own m_pParent; don't free it.
-  CloseHandle(m_WakeupSema);
-  DeleteCriticalSection(&m_iNumWaitingLock);
-  CloseHandle(m_WaitersDone);
+  // CONDITION_VARIABLE owns no kernel handle or heap allocation, so there's
+  // nothing to release. We don't own m_pParent; don't free it.
 }
 
-// Event logic from http://www.cs.wustl.edu/~schmidt/win32-cv-1.html.
+// Native condition variable, backed by m_pParent->mutex (a CRITICAL_SECTION).
+// Replaces the old semaphore + waiter-count emulation of a condition
+// variable described at http://www.cs.wustl.edu/~schmidt/win32-cv-1.html,
+// which predates SleepConditionVariableCS (added in Vista).
 bool EventImpl_Win32::Wait(RageTimer* pTimeout) {
-  EnterCriticalSection(&m_iNumWaitingLock);
-  ++m_iNumWaiting;
-  LeaveCriticalSection(&m_iNumWaitingLock);
-
-  unsigned iMilliseconds = INFINITE;
+  DWORD iMilliseconds = INFINITE;
   if (pTimeout != nullptr) {
     float fSecondsInFuture = -pTimeout->Ago();
-    iMilliseconds = static_cast<unsigned>(
+    iMilliseconds = static_cast<DWORD>(
         std::max(0, static_cast<int>(fSecondsInFuture * 1000)));
   }
 
-  // Unlock the mutex and wait for a signal.
-  bool bSuccess =
-      (SignalObjectAndWait(
-           m_pParent->mutex, m_WakeupSema, iMilliseconds, FALSE) ==
-       WAIT_OBJECT_0);
+  // Atomically releases m_pParent->mutex and blocks, then reacquires it
+  // before returning, whether woken or timed out. Condition variables are
+  // subject to spurious and stolen wakeups, so callers should re-check
+  // whatever condition they're waiting for rather than trust a single
+  // wakeup on its own.
+  bool bSuccess = SleepConditionVariableCS(
+                      &m_ConditionVariable, &m_pParent->mutex,
+                      iMilliseconds) != 0;
 
-  EnterCriticalSection(&m_iNumWaitingLock);
   if (!bSuccess) {
-    /* Avoid a race condition: someone may have signalled the object
-     * between SignalObjectAndWait and EnterCriticalSection.
-     * While we hold m_iNumWaitingLock, poll (with a zero timeout) the
-     * object one last time. */
-    if (WaitForSingleObject(m_WakeupSema, 0) == WAIT_OBJECT_0) {
-      bSuccess = true;
-    }
-  }
-  --m_iNumWaiting;
-  bool bLastWaiting = (m_iNumWaiting == 0);
-  LeaveCriticalSection(&m_iNumWaitingLock);
-
-  /* If we're the last waiter to wake up, and we were actually woken by
-   * another thread (not by timeout), wake up the signaller. */
-  if (bLastWaiting && bSuccess) {
-    SignalObjectAndWait(m_WaitersDone, m_pParent->mutex, INFINITE, FALSE);
-  } else {
-    WaitForSingleObject(m_pParent->mutex, INFINITE);
+    ASSERT_M(
+        GetLastError() == ERROR_TIMEOUT,
+        ssprintf(
+            "%s", werr_ssprintf(GetLastError(), "SleepConditionVariableCS")
+                      .c_str()));
   }
 
   return bSuccess;
 }
 
-void EventImpl_Win32::Signal() {
-  EnterCriticalSection(&m_iNumWaitingLock);
-
-  if (m_iNumWaiting == 0) {
-    LeaveCriticalSection(&m_iNumWaitingLock);
-    return;
-  }
-
-  ReleaseSemaphore(m_WakeupSema, 1, 0);
-
-  LeaveCriticalSection(&m_iNumWaitingLock);
-
-  // The waiter will touch m_WaitersDone.
-  WaitForSingleObject(m_WaitersDone, INFINITE);
-}
+void EventImpl_Win32::Signal() { WakeConditionVariable(&m_ConditionVariable); }
 
 void EventImpl_Win32::Broadcast() {
-  EnterCriticalSection(&m_iNumWaitingLock);
-
-  if (m_iNumWaiting == 0) {
-    LeaveCriticalSection(&m_iNumWaitingLock);
-    return;
-  }
-
-  ReleaseSemaphore(m_WakeupSema, m_iNumWaiting, 0);
-
-  LeaveCriticalSection(&m_iNumWaitingLock);
-
-  /* The last waiter will touch m_WaitersDone, so we wait for all waiters
-   * to wake up and start waiting for the mutex before returning. */
-  WaitForSingleObject(m_WaitersDone, INFINITE);
+  WakeAllConditionVariable(&m_ConditionVariable);
 }
 
 EventImpl* MakeEvent(MutexImpl* pMutex) {

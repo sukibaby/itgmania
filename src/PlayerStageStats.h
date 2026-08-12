@@ -64,6 +64,12 @@ class PlayerStageStats {
    * this is only set if both players were failing at the same time. */
   bool m_bFailed;
 
+  /**
+   * @brief Was Merciful Beginner (reduced grade penalties) in effect for
+   * this stage, either via preference or an automatically-detected slow
+   * beginner chart? Set by ScoreKeeperNormal and used by GetGrade(). */
+  bool m_bMercifulBeginnerInEffect;
+
   int m_iPossibleDancePoints;
   int m_iCurPossibleDancePoints;
   int m_iActualDancePoints;

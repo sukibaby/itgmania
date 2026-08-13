@@ -14,7 +14,6 @@
 #include "GamePreferences.h"
 #include "GameState.h"
 #include "LuaManager.h"
-#include "MeasureInfo.h"
 #include "MessageManager.h"
 #include "NoteData.h"
 #include "NoteDataUtil.h"
@@ -214,8 +213,8 @@ void ScoreKeeperNormal::OnNextSong(
   ASSERT(m_iMaxPossiblePoints >= 0);
   m_iMaxScoreSoFar += m_iMaxPossiblePoints;
 
-  TimingData* pTimingData = const_cast<TimingData*>(pSteps->GetTimingData());
-  GAMESTATE->SetProcessedTimingData(pTimingData);
+  GAMESTATE->SetProcessedTimingData(
+      const_cast<TimingData*>(pSteps->GetTimingData()));
 
   m_iNumTapsAndHolds = pNoteData->GetNumRowsWithTapOrHoldHead() +
                        pNoteData->GetNumHoldNotes() + pNoteData->GetNumRolls();
@@ -227,21 +226,6 @@ void ScoreKeeperNormal::OnNextSong(
    * song is in a course, since that makes PlayerStageStats::GetGrade hard. */
   m_bIsBeginner = pSteps->GetDifficulty() == Difficulty_Beginner &&
                   !GAMESTATE->IsCourseMode();
-
-  /* Merciful Beginner also kicks in automatically for very slow beginner
-   * charts, regardless of the preference. Only measure NPS when it's
-   * actually needed. */
-  float fPeakNps = 0.0f;
-  if (m_bIsBeginner) {
-    MeasureInfo measureInfo;
-    MeasureInfo::CalculateMeasureInfo(*pNoteData, pTimingData, measureInfo);
-    fPeakNps = measureInfo.peakNps;
-  }
-  m_bMercifulBeginnerInEffect =
-      m_bIsBeginner && (PREFSMAN->m_bMercifulBeginner ||
-                         fPeakNps <= MERCIFUL_BEGINNER_MAX_PEAK_NPS);
-  m_pPlayerStageStats->m_bMercifulBeginnerInEffect =
-      m_bMercifulBeginnerInEffect;
 
   ASSERT(m_iPointBonus >= 0);
 
@@ -681,17 +665,16 @@ int ScoreKeeperNormal::GetPossibleDancePoints(
 
   int ret = 0;
 
-  // Not beginner, so merciful beginner never applies here either.
   ret += int(radars[RadarCategory_TapsAndHolds]) *
-         TapNoteScoreToDancePoints(TNS_W1, false, false);
+         TapNoteScoreToDancePoints(TNS_W1, false);
   if (TICK_HOLDS) {
     ret += NoteDataUtil::GetTotalHoldTicks(nd, td) *
            g_iPercentScoreWeight.GetValue(SE_CheckpointHit);
   }
   ret += int(radars[RadarCategory_Holds]) *
-         HoldNoteScoreToDancePoints(HNS_Held, false, false);
+         HoldNoteScoreToDancePoints(HNS_Held, false);
   ret += int(radars[RadarCategory_Rolls]) *
-         HoldNoteScoreToDancePoints(HNS_Held, false, false);
+         HoldNoteScoreToDancePoints(HNS_Held, false);
 
   return ret;
 }
@@ -717,17 +700,16 @@ int ScoreKeeperNormal::GetPossibleGradePoints(
 
   int ret = 0;
 
-  // Not beginner, so merciful beginner never applies here either.
   ret += int(radars[RadarCategory_TapsAndHolds]) *
-         TapNoteScoreToGradePoints(TNS_W1, false, false);
+         TapNoteScoreToGradePoints(TNS_W1, false);
   if (TICK_HOLDS) {
     ret += NoteDataUtil::GetTotalHoldTicks(nd, td) *
            g_iGradeWeight.GetValue(SE_CheckpointHit);
   }
   ret += int(radars[RadarCategory_Holds]) *
-         HoldNoteScoreToGradePoints(HNS_Held, false, false);
+         HoldNoteScoreToGradePoints(HNS_Held, false);
   ret += int(radars[RadarCategory_Rolls]) *
-         HoldNoteScoreToGradePoints(HNS_Held, false, false);
+         HoldNoteScoreToGradePoints(HNS_Held, false);
 
   return ret;
 }
@@ -744,26 +726,22 @@ int ScoreKeeperNormal::GetPossibleGradePoints(
 }
 
 int ScoreKeeperNormal::TapNoteScoreToDancePoints(TapNoteScore tns) const {
-  return TapNoteScoreToDancePoints(
-      tns, m_bIsBeginner, m_bMercifulBeginnerInEffect);
+  return TapNoteScoreToDancePoints(tns, m_bIsBeginner);
 }
 
 int ScoreKeeperNormal::HoldNoteScoreToDancePoints(HoldNoteScore hns) const {
-  return HoldNoteScoreToDancePoints(
-      hns, m_bIsBeginner, m_bMercifulBeginnerInEffect);
+  return HoldNoteScoreToDancePoints(hns, m_bIsBeginner);
 }
 
 int ScoreKeeperNormal::TapNoteScoreToGradePoints(TapNoteScore tns) const {
-  return TapNoteScoreToGradePoints(
-      tns, m_bIsBeginner, m_bMercifulBeginnerInEffect);
+  return TapNoteScoreToGradePoints(tns, m_bIsBeginner);
 }
 int ScoreKeeperNormal::HoldNoteScoreToGradePoints(HoldNoteScore hns) const {
-  return HoldNoteScoreToGradePoints(
-      hns, m_bIsBeginner, m_bMercifulBeginnerInEffect);
+  return HoldNoteScoreToGradePoints(hns, m_bIsBeginner);
 }
 
 int ScoreKeeperNormal::TapNoteScoreToDancePoints(
-    TapNoteScore tns, bool bBeginner, bool bMercifulBeginnerActive) {
+    TapNoteScore tns, bool bBeginner) {
   if (!GAMESTATE->ShowW1() && tns == TNS_W1) {
     tns = TNS_W2;
   }
@@ -804,14 +782,14 @@ int ScoreKeeperNormal::TapNoteScoreToDancePoints(
       iWeight = g_iPercentScoreWeight.GetValue(SE_CheckpointMiss);
       break;
   }
-  if (bBeginner && bMercifulBeginnerActive) {
+  if (bBeginner && PREFSMAN->m_bMercifulBeginner) {
     iWeight = std::max(0, iWeight);
   }
   return iWeight;
 }
 
 int ScoreKeeperNormal::HoldNoteScoreToDancePoints(
-    HoldNoteScore hns, bool bBeginner, bool bMercifulBeginnerActive) {
+    HoldNoteScore hns, bool bBeginner) {
   int iWeight = 0;
   switch (hns) {
     DEFAULT_FAIL(hns);
@@ -828,14 +806,14 @@ int ScoreKeeperNormal::HoldNoteScoreToDancePoints(
       iWeight = g_iPercentScoreWeight.GetValue(SE_Missed);
       break;
   }
-  if (bBeginner && bMercifulBeginnerActive) {
+  if (bBeginner && PREFSMAN->m_bMercifulBeginner) {
     iWeight = std::max(0, iWeight);
   }
   return iWeight;
 }
 
 int ScoreKeeperNormal::TapNoteScoreToGradePoints(
-    TapNoteScore tns, bool bBeginner, bool bMercifulBeginnerActive) {
+    TapNoteScore tns, bool bBeginner) {
   if (!GAMESTATE->ShowW1() && tns == TNS_W1) {
     tns = TNS_W2;
   }
@@ -879,14 +857,14 @@ int ScoreKeeperNormal::TapNoteScoreToGradePoints(
       iWeight = g_iGradeWeight.GetValue(SE_CheckpointMiss);
       break;
   }
-  if (bBeginner && bMercifulBeginnerActive) {
+  if (bBeginner && PREFSMAN->m_bMercifulBeginner) {
     iWeight = std::max(0, iWeight);
   }
   return iWeight;
 }
 
 int ScoreKeeperNormal::HoldNoteScoreToGradePoints(
-    HoldNoteScore hns, bool bBeginner, bool bMercifulBeginnerActive) {
+    HoldNoteScore hns, bool bBeginner) {
   int iWeight = 0;
   switch (hns) {
     DEFAULT_FAIL(hns);

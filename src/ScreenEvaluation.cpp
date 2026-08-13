@@ -208,8 +208,7 @@ void ScreenEvaluation::Init() {
       ss.m_player[p].m_iTapNoteScores[TNS_W2] = RandomInt(3);
       ss.m_player[p].m_iTapNoteScores[TNS_W3] = RandomInt(3);
       ss.m_player[p].m_iPossibleGradePoints =
-          4 *
-          ScoreKeeperNormal::TapNoteScoreToGradePoints(TNS_W1, false, false);
+          4 * ScoreKeeperNormal::TapNoteScoreToGradePoints(TNS_W1, false);
       ss.m_player[p].m_fLifeRemainingSeconds = randomf(90, 580);
       ss.m_player[p].m_iScore = rand() % (900 * 1000 * 1000);
       ss.m_player[p].m_iPersonalHighScoreIndex = (rand() % 3) - 1;

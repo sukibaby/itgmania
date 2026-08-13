@@ -11,7 +11,6 @@
 #include "GameState.h"
 #include "LifeMeter.h"
 #include "LuaReference.h"
-#include "MeasureInfo.h"
 #include "MessageManager.h"
 #include "PlayerNumber.h"
 #include "PlayerOptions.h"
@@ -105,27 +104,12 @@ void LifeMeterBar::Load(
       FAIL_M(ssprintf("Invalid DrainType: %i", dtype));
   }
 
-  // Change life difficulty to really easy if merciful beginner on. This also
-  // kicks in automatically for very slow beginner charts, regardless of the
-  // player's preference.
-  const Steps* pSteps = GAMESTATE->m_pCurSteps[pn];
-  bool bIsBeginner = pSteps && pSteps->GetDifficulty() == Difficulty_Beginner;
-
-  float fPeakNps = 0.0f;
-  if (bIsBeginner) {
-    NoteData nd;
-    pSteps->GetNoteData(nd);
-    MeasureInfo measureInfo;
-    MeasureInfo::CalculateMeasureInfo(
-        nd, const_cast<TimingData*>(pSteps->GetTimingData()), measureInfo);
-    fPeakNps = measureInfo.peakNps;
-  }
-
+  // Change life difficulty to really easy if merciful beginner on
   m_bMercifulBeginnerInEffect =
       GAMESTATE->m_PlayMode == PLAY_MODE_REGULAR &&
-      GAMESTATE->IsPlayerEnabled(pPlayerState) && bIsBeginner &&
-      (PREFSMAN->m_bMercifulBeginner ||
-       fPeakNps <= MERCIFUL_BEGINNER_MAX_PEAK_NPS);
+      GAMESTATE->IsPlayerEnabled(pPlayerState) &&
+      GAMESTATE->m_pCurSteps[pn]->GetDifficulty() == Difficulty_Beginner &&
+      PREFSMAN->m_bMercifulBeginner;
 
   AfterLifeChanged();
 }

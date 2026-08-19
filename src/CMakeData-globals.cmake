@@ -2,7 +2,9 @@ list(APPEND SMDATA_GLOBAL_FILES_SRC
             "GameLoop.cpp"
             "global.cpp"
             "SpecialFiles.cpp"
-            "StepMania.cpp" # TODO: Refactor into separate main project.
+            "StepMania.cpp" # only functions which must run on every frame
+            "StepManiaInit.cpp" # singleton management, filesystem & display bootstrap
+            "StepManiaIO.cpp" # contents are handled by a worker thread
             "${SM_GENERATED_SRC_DIR}/verstub.cpp")
 
 list(APPEND SMDATA_GLOBAL_FILES_HPP
